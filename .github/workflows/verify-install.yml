@@ -1,0 +1,173 @@
+# Installs fread-tools on clean machines, the way an editor does, every time a
+# release is published: Homebrew on macOS (Apple Silicon, Intel) and Linux
+# (x86-64, ARM64), Scoop on Windows. Each checks every tool's --version, fux,
+# and the snippet library where fux looks for it; then, where an earlier
+# release exists, installs that one and upgrades it to this one.
+#
+# Synced from fread/fread-tools' packaging/github/ by its release job: edit it
+# there. Run it by hand from the Actions tab (workflow_dispatch) to re-check the
+# latest release.
+name: verify install
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TAP: fread-now/tap
+  TAP_REPO: FRead-Now/homebrew-tap
+  BUCKET_URL: https://github.com/FRead-Now/scoop-bucket
+  BUCKET_REPO: FRead-Now/scoop-bucket
+  TOOLS: ingest-gutenberg-html ingest-override ingest-work ingest-notes ingest-audiobook fread-admin
+
+jobs:
+  version:
+    name: which release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      # Read through env, never interpolated into the script: a release name is
+      # input, and ${{ }} inside run: is a shell-injection sink.
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRE: ${{ github.event.release.prerelease }}
+        run: |
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+            PRE=false
+          fi
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::'$TAG' is not a release tag"; exit 1; }
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          echo "fread-tools $TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  # The release is published before its tap and bucket commits land (the
+  # release job pushes them right after), so wait for both to name it.
+  packaged:
+    name: tap and bucket carry it
+    needs: version
+    if: needs.version.outputs.prerelease != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          for i in $(seq 1 60); do
+            f=$(gh api "repos/$TAP_REPO/contents/Formula/fread-tools.rb" --jq .content 2>/dev/null | base64 -d || true)
+            m=$(gh api "repos/$BUCKET_REPO/contents/bucket/fread-tools.json" --jq .content 2>/dev/null | base64 -d || true)
+            if echo "$f" | grep -q "version \"$VERSION\"" && echo "$m" | grep -q "\"version\": \"$VERSION\""; then
+              echo "tap and bucket carry $VERSION"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::after 10 minutes the tap or the bucket still does not carry $VERSION"; exit 1
+
+  brew:
+    name: brew (${{ matrix.os }})
+    needs: [version, packaged]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - name: Homebrew on PATH
+        if: runner.os == 'Linux'
+        run: |
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          echo /home/linuxbrew/.linuxbrew/sbin >> "$GITHUB_PATH"
+      - name: Install, as an editor does
+        run: |
+          brew install "$TAP/fread-tools"
+          brew test fread-tools
+      - name: Every tool, fux and the snippet library
+        run: |
+          for t in $TOOLS; do
+            got=$("$t" --version); echo "$got"
+            case "$got" in "$t v$VERSION (schema "*")") ;; *) echo "::error::$t answered '$got'"; exit 1 ;; esac
+          done
+          fux --version
+          test -f "$(brew --prefix)/share/fux/snippets.d/fread.xml"
+          echo "brew on ${{ matrix.os }}: fread-tools $VERSION and $(fux --version)" >> "$GITHUB_STEP_SUMMARY"
+      # An editor's upgrade: the previous formula, from the tap's own history,
+      # then `brew upgrade`. Skipped for the first release.
+      - name: Upgrade from the previous release
+        run: |
+          brew uninstall fread-tools
+          tap=$(brew --repo "$TAP")
+          prev=$(git -C "$tap" log --format=%H --skip=1 -n 1 -- Formula/fread-tools.rb)
+          if [ -z "$prev" ]; then echo "no earlier release in the tap: nothing to upgrade from"; exit 0; fi
+          git -C "$tap" checkout -q "$prev"
+          brew install "$TAP/fread-tools"
+          old=$(ingest-work --version)
+          git -C "$tap" checkout -q -
+          brew upgrade fread-tools
+          new=$(ingest-work --version)
+          echo "$old -> $new"
+          case "$new" in "ingest-work v$VERSION "*) ;; *) echo "::error::upgrade left '$new'"; exit 1 ;; esac
+          echo "brew upgrade on ${{ matrix.os }}: $old -> $new" >> "$GITHUB_STEP_SUMMARY"
+
+  scoop:
+    name: scoop (windows)
+    needs: [version, packaged]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Install Scoop
+        shell: pwsh
+        run: |
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          Join-Path (Resolve-Path ~).Path "scoop\shims" >> $env:GITHUB_PATH
+      - name: Install, as an editor does
+        shell: pwsh
+        run: |
+          scoop bucket add fread $env:BUCKET_URL
+          scoop install fread-tools
+          if ($LASTEXITCODE) { exit 1 }
+      - name: Every tool, fux and the snippet library
+        shell: pwsh
+        run: |
+          foreach ($t in $env:TOOLS.Split(' ')) {
+            $got = (& "$t" --version)
+            Write-Output $got
+            if (-not $got.StartsWith("$t v$env:VERSION (schema ")) { Write-Error "$t answered '$got'"; exit 1 }
+          }
+          fux --version
+          if (-not (Test-Path (Join-Path $env:APPDATA 'fux\snippets.d\fread.xml'))) { Write-Error "no snippet library in %APPDATA%\fux\snippets.d"; exit 1 }
+          "scoop on windows: fread-tools $env:VERSION and $(fux --version)" >> $env:GITHUB_STEP_SUMMARY
+      # An editor's upgrade: the previous manifest, from the bucket's own
+      # history, then `scoop update`. Skipped for the first release.
+      - name: Upgrade from the previous release
+        shell: pwsh
+        run: |
+          scoop uninstall fread-tools
+          $bucket = Join-Path (Resolve-Path ~).Path 'scoop\buckets\fread'
+          $prev = git -C $bucket log --format=%H --skip=1 -n 1 -- bucket/fread-tools.json
+          if (-not $prev) { Write-Output "no earlier release in the bucket: nothing to upgrade from"; exit 0 }
+          git -C $bucket checkout -q $prev
+          scoop install fread-tools
+          $old = (ingest-work --version)
+          git -C $bucket checkout -q -
+          scoop update fread-tools
+          $new = (ingest-work --version)
+          Write-Output "$old -> $new"
+          if (-not $new.StartsWith("ingest-work v$env:VERSION ")) { Write-Error "upgrade left '$new'"; exit 1 }
+          if (-not (Test-Path (Join-Path $env:APPDATA 'fux\snippets.d\fread.xml'))) { Write-Error "the upgrade lost the snippet library"; exit 1 }
+          "scoop update on windows: $old -> $new" >> $env:GITHUB_STEP_SUMMARY
