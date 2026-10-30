@@ -104,6 +104,11 @@ jobs:
           done
           fux --version
           test -f "$(brew --prefix)/share/fux/snippets.d/fread.xml"
+          # fux lists what it loaded and exits 1 on any file's problem.
+          fux --snippets > snippets.txt || { cat snippets.txt; echo "::error::fux --snippets reported a problem"; exit 1; }
+          cat snippets.txt
+          grep -Eq 'share/fux/snippets\.d/fread\.xml: [0-9]+ snippets' snippets.txt ||
+            { echo "::error::fux did not load FRead's snippet library"; exit 1; }
           echo "brew on ${{ matrix.os }}: fread-tools $VERSION and $(fux --version)" >> "$GITHUB_STEP_SUMMARY"
       # An editor's upgrade: the previous formula, from the tap's own history,
       # then `brew upgrade`. Skipped for the first release.
@@ -151,6 +156,11 @@ jobs:
           }
           fux --version
           if (-not (Test-Path (Join-Path $env:APPDATA 'fux\snippets.d\fread.xml'))) { Write-Error "no snippet library in %APPDATA%\fux\snippets.d"; exit 1 }
+          # fux lists what it loaded and exits 1 on any file's problem.
+          $snippets = (fux --snippets) -join "`n"
+          if ($LASTEXITCODE) { Write-Output $snippets; Write-Error "fux --snippets reported a problem"; exit 1 }
+          Write-Output $snippets
+          if ($snippets -notmatch 'snippets\.d\\fread\.xml: \d+ snippets') { Write-Error "fux did not load FRead's snippet library"; exit 1 }
           "scoop on windows: fread-tools $env:VERSION and $(fux --version)" >> $env:GITHUB_STEP_SUMMARY
       # An editor's upgrade: the previous manifest, from the bucket's own
       # history, then `scoop update`. Skipped for the first release.
