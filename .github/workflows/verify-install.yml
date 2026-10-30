@@ -94,8 +94,7 @@ jobs:
           echo /home/linuxbrew/.linuxbrew/sbin >> "$GITHUB_PATH"
       - name: Install, as an editor does
         run: |
-          brew tap marcelinto/tap
-          brew install "$TAP/fread-tools"
+          brew install marcelinto/tap/fux "$TAP/fread-tools"
           brew test fread-tools
       - name: Every tool, fux and the snippet library
         run: |
