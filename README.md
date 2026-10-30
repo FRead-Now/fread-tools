@@ -21,8 +21,12 @@ edited in, and FRead's snippet library for it.
 On macOS or Linux, with [Homebrew](https://brew.sh):
 
 ```sh
+brew tap marcelinto/tap
 brew install fread-now/tap/fread-tools
 ```
+
+The first line, once per machine, adds fux's own tap: Homebrew installs a
+dependency from another tap only once you have tapped it.
 
 On Windows, with [Scoop](https://scoop.sh):
 
