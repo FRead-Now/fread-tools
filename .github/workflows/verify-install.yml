@@ -2,7 +2,9 @@
 # release is published: Homebrew on macOS (Apple Silicon, Intel) and Linux
 # (x86-64, ARM64), Scoop on Windows. Each checks every tool's --version, fux,
 # and the snippet library where fux looks for it; then, where an earlier
-# release exists, installs that one and upgrades it to this one.
+# release exists, installs that one and upgrades it to this one. An audio
+# editor's line, which installs abook beside the tools in one command, runs on
+# a clean Apple Silicon Mac.
 #
 # Synced from fread/fread-tools' packaging/github/ by its release job: edit it
 # there. Run it by hand from the Actions tab (workflow_dispatch) to re-check the
@@ -127,6 +129,33 @@ jobs:
           echo "$old -> $new"
           case "$new" in "ingest-work v$VERSION "*) ;; *) echo "::error::upgrade left '$new'"; exit 1 ;; esac
           echo "brew upgrade on ${{ matrix.os }}: $old -> $new" >> "$GITHUB_STEP_SUMMARY"
+
+  # The handbook's line for an audio editor (CW-19): fread-tools for the text's
+  # export and the import, abook for the alignment, both from FRead's tap in one
+  # command, on the only platform abook installs on. Each package is checked on
+  # its own elsewhere (abook by FRead-Now/abook-utils' verify-install); this is
+  # the one line, on a machine that has trusted neither tap before.
+  audio-editor:
+    name: brew, an audio editor's line (macos-latest)
+    needs: [version, packaged]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - name: Install, as an audio editor does
+        run: brew install marcelinto/tap/fux "$TAP/fread-tools" "$TAP/abook-utils"
+      - name: Both packages answer
+        run: |
+          for t in $TOOLS; do
+            got=$("$t" --version); echo "$got"
+            case "$got" in "$t v$VERSION (schema "*")") ;; *) echo "::error::$t answered '$got'"; exit 1 ;; esac
+          done
+          fux --version
+          got=$(abook --version); echo "$got"
+          case "$got" in "abook v"*" (fread-audio-alignment "*")") ;; *) echo "::error::abook answered '$got'"; exit 1 ;; esac
+          echo "audio editor on macos-latest: fread-tools $VERSION, $got and $(fux --version)" >> "$GITHUB_STEP_SUMMARY"
 
   scoop:
     name: scoop (windows)

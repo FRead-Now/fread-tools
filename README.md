@@ -58,7 +58,7 @@ tool can reach the catalog. Nothing in this repository grants either.
 
 ## Licence
 
-© FRead. All rights reserved. You may download and run these tools to prepare
+© FRead Inc. All rights reserved. You may download and run these tools to prepare
 works for FRead. The open-source components they are built from, and their
 licences, are listed in `THIRD-PARTY-NOTICES.md` in every release archive.
 
